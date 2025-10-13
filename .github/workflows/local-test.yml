@@ -1,0 +1,162 @@
+name: Local Composite Action Test
+on:
+  workflow_dispatch:
+  push:
+    branches: [ local-test ]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout the repository ONLY on GitHub; when running under act we want the local working tree (including uncommitted test/ files)
+      - name: Checkout (GitHub only)
+        if: ${{ !env.ACT }}
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Prepare test content: copy everything from test/ root into workspace root (without overwriting existing unless forced)
+      - name: Copy test harness content
+        run: |
+          echo "Copying test harness files from ./test into workspace root..."
+          if [ ! -d test ]; then
+            echo "No test/ directory found after checkout. If running under act and you expected local uncommitted test data, ensure checkout step is skipped (env ACT is: ${ACT:-unset}).";
+            echo "Contents of workspace root:"; ls -1; exit 0;
+          fi
+          shopt -s dotglob nullglob
+          for f in test/*; do
+            if [ -e "$f" ]; then
+              if [ -d "$f" ]; then
+                echo "Syncing directory $f -> ${f#test/}";
+                rsync -a --delete "$f/" "${f#test/}/" 2>/dev/null || cp -R "$f" .
+              else
+                echo "Copying file $f";
+                cp -f "$f" .
+              fi
+            fi
+          done
+          echo "Workspace root now contains:"; ls -1
+        shell: bash
+
+      # Install .NET runtime
+      - name: Setup .NET Core SDK
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      
+      # Install Java runtime (only needed if you want to run the offical HL7 Java validator)
+      - name: Setup Java JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: 'microsoft'
+          java-version: '21'
+
+      # Setup Node.js (needed for SUSHI) - required when using the smaller act image mapping
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # Pre-install Firely Terminal (defensive to ensure availability under act minimal image)
+      - name: Preinstall Firely Terminal
+        run: |
+          set -e
+          echo "DOTNET VERSION:" $(dotnet --version)
+          if ! command -v fhir >/dev/null 2>&1; then
+            dotnet tool install --global Firely.Terminal --version 3.4.0
+          else
+            echo "Firely.Terminal already present: $(fhir -v | tr '\n' ' ')" || true
+          fi
+          # Ensure path for following steps
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+          echo "Resolved fhir path: $(command -v fhir || echo 'not found')"
+        shell: bash
+
+      # Connectivity & secret sanity diagnostics BEFORE composite action
+      - name: Diagnostics - Simplifier connectivity & secrets
+        run: |
+          set -e
+          echo "== Secret Presence Check =="
+          if [ -n "$SIMPLIFIER_USERNAME" ]; then echo "SIMPLIFIER_USERNAME present (length ${#SIMPLIFIER_USERNAME})"; else echo "SIMPLIFIER_USERNAME MISSING"; fi
+          if [ -n "$SIMPLIFIER_PASSWORD" ]; then echo "SIMPLIFIER_PASSWORD present (length ${#SIMPLIFIER_PASSWORD})"; else echo "SIMPLIFIER_PASSWORD MISSING"; fi
+
+          echo "== Network Reachability =="
+          which curl || (echo 'curl missing' && exit 1)
+          echo "Pinging api.simplifier.net (HTTPS root) ..."
+          curl -I -s https://api.simplifier.net/ | head -n 1 || echo "No response from root endpoint"
+          echo "Heartbeat (if available) ..."
+          curl -s -o /dev/null -w 'HTTP % {http_code}\n' https://api.simplifier.net/ || true
+
+          echo "== Manual Firely Terminal login test with timeout =="
+          if ! command -v fhir >/dev/null 2>&1; then
+            echo "fhir CLI not on PATH unexpectedly"; exit 1;
+          fi
+          # Avoid dumping credentials; just attempt
+          if [ -n "$SIMPLIFIER_USERNAME" ] && [ -n "$SIMPLIFIER_PASSWORD" ]; then
+            if command -v timeout >/dev/null 2>&1; then
+              set +e
+              timeout 25s fhir login email=$SIMPLIFIER_USERNAME password=$SIMPLIFIER_PASSWORD >/tmp/fhir_login.out 2>&1
+              LOGIN_RC=$?
+              set -e
+              echo "Login exit code: $LOGIN_RC (124=timeout)"
+              tail -n 20 /tmp/fhir_login.out | sed 's/password=[^ ]*/password=***MASKED***/g'
+            else
+              echo "timeout command not available; running without it (may hang)";
+              fhir login email=$SIMPLIFIER_USERNAME password=$SIMPLIFIER_PASSWORD >/dev/null 2>&1 || echo "Manual login non-zero exit (ignored)"
+            fi
+          else
+            echo "Skipping manual login test due to missing credentials"
+          fi
+        shell: bash
+        env:
+          SIMPLIFIER_USERNAME: ${{ secrets.SIMPLIFIER_USERNAME }}
+          SIMPLIFIER_PASSWORD: ${{ secrets.SIMPLIFIER_PASSWORD }}
+
+      # Shim fhir CLI to skip 'fhir login' (local only) while allowing all other subcommands
+      - name: Shim Firely Terminal login (local only)
+        run: |
+          set -e
+          REAL_FHIR="$HOME/.dotnet/tools/fhir"
+          if [ ! -x "$REAL_FHIR" ]; then
+            echo "Real fhir binary not found at $REAL_FHIR" >&2; exit 1
+          fi
+          mkdir -p shim-bin
+          printf '%s\n' '#!/usr/bin/env bash' \
+            'REAL_FHIR="$HOME/.dotnet/tools/fhir"' \
+            'if [ "$1" = "login" ]; then' \
+            '  echo "[shim] Skipping fhir login during local act run"' \
+            '  exit 0' \
+            'fi' \
+            'exec "$REAL_FHIR" "$@"' > shim-bin/fhir
+          chmod +x shim-bin/fhir
+          echo "shim-bin" >> "$GITHUB_PATH"
+          echo "Shim in place. fhir resolves to: $(command -v fhir)"
+          fhir -v || true
+        shell: bash
+       
+      # Run local version of the composite action under development
+      - name: Firely.Terminal (Local)
+        uses: ./
+        with:
+          PATH_TO_CONFORMANCE_RESOURCES: fsh-generated/resources
+          PATH_TO_EXAMPLES: fsh-generated/resources
+          # If you add a minimal QC rules file under test/quality-control/minimal.rules.yaml you can enable this:
+          # PATH_TO_QUALITY_CONTROL_RULES: quality-control/minimal
+          DOTNET_VALIDATION_ENABLED: true
+          JAVA_VALIDATION_ENABLED: true
+          JAVA_VALIDATION_OPTIONS: -show-message-ids -advisor-file input/validation-advisor-file.txt
+          EXPECTED_FAILS: VALIDATION_CONFORMANCE_DOTNET VALIDATION_CONFORMANCE_JAVA
+          SIMPLIFIER_USERNAME: ${{ secrets.SIMPLIFIER_USERNAME }}
+          SIMPLIFIER_PASSWORD: ${{ secrets.SIMPLIFIER_PASSWORD }}
+          SUSHI_ENABLED: true
+          FIRELY_TERMINAL_VERSION: 3.4.0
+          ##JAVA_VALIDATOR_VERSION: 6.7.1
+          FIRELY_TERMINAL_VALIDATOR_ENGINE: Advanced
+
+      # Optional: show detected FHIR version after run
+      - name: Show detected FHIR version
+        if: always()
+        run: |
+          echo "Detected FHIR_VERSION: $FHIR_VERSION"
+          ls -R fsh-generated || true
+        shell: bash

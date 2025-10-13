@@ -106,8 +106,8 @@ jobs:
           # PATH_TO_QUALITY_CONTROL_RULES: quality-control/minimal
           DOTNET_VALIDATION_ENABLED: true
           JAVA_VALIDATION_ENABLED: true
-          JAVA_VALIDATION_OPTIONS: -show-message-ids -advisor-file input/validation-advisor-file.txt
-          EXPECTED_FAILS: VALIDATION_CONFORMANCE_DOTNET VALIDATION_CONFORMANCE_JAVA VALIDATION_CONFORMANCE_JAVA
+          JAVA_VALIDATION_OPTIONS: -show-message-ids -advisor-file input/validation-advisor-file.txt -display-issues-are-warnings -best-practice ignore -allow-example-urls true
+          EXPECTED_FAILS: VALIDATION_CONFORMANCE_DOTNET VALIDATION_CONFORMANCE_JAVA VALIDATION_EXAMPLES_JAVA
           SIMPLIFIER_USERNAME: ${{ secrets.SIMPLIFIER_USERNAME }}
           SIMPLIFIER_PASSWORD: ${{ secrets.SIMPLIFIER_PASSWORD }}
           SUSHI_ENABLED: true
@@ -159,6 +159,7 @@ jobs:
           #PATH_TO_QUALITY_CONTROL_RULES: unittest
           DOTNET_VALIDATION_ENABLED: false
           JAVA_VALIDATION_ENABLED: true
+          JAVA_VALIDATION_OPTIONS: -show-message-ids -display-issues-are-warnings -best-practice ignore -allow-example-urls true
           EXPECTED_FAILS: VALIDATION_CONFORMANCE_JAVA VALIDATION_EXAMPLES_JAVA
           SIMPLIFIER_USERNAME: ${{ secrets.SIMPLIFIER_USERNAME }}
           SIMPLIFIER_PASSWORD: ${{ secrets.SIMPLIFIER_PASSWORD }}

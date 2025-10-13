@@ -1,3 +1,5 @@
+# For local usage instructions see test/README.md (act prerequisites, secrets, run command)
+
 name: Local Composite Action Test
 on:
   workflow_dispatch:
@@ -8,12 +10,9 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      # Checkout the repository ONLY on GitHub; when running under act we want the local working tree (including uncommitted test/ files)
-      - name: Checkout (GitHub only)
-        if: ${{ !env.ACT }}
+      # Checkout the repository 
+      - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
       # Prepare test content: copy everything from test/ root into workspace root (without overwriting existing unless forced)
       - name: Copy test harness content
@@ -57,6 +56,28 @@ jobs:
         with:
           node-version: '20'
 
+      # Local act workaround: ensure global npm directory exists so action's SUSHI install (which chowns then installs) succeeds on minimal images
+      - name: Prepare global npm dir for SUSHI (local only)
+        run: |
+          sudo mkdir -p /usr/local/lib/node_modules
+          sudo chown -R $USER /usr/local/lib/node_modules
+          # Ensure sudo can find node, npm, npx (actions/setup-node puts them outside root's default PATH)
+          NODE_BIN_DIR=$(dirname $(which node))
+          for bin in node npm npx; do
+            if command -v $bin >/dev/null 2>&1; then
+              TARGET=$(which $bin)
+              if [ ! -e /usr/local/bin/$bin ]; then
+                sudo ln -s "$TARGET" /usr/local/bin/$bin
+              fi
+            else
+              echo "Warning: $bin not found in user PATH during symlink setup";
+            fi
+          done
+          echo "Symlinked node tooling for sudo:"
+          ls -l /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx 2>/dev/null || true
+          ls -ld /usr/local/lib/node_modules
+        shell: bash
+
       # Pre-install Firely Terminal (defensive to ensure availability under act minimal image)
       - name: Preinstall Firely Terminal
         run: |
@@ -71,68 +92,7 @@ jobs:
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
           echo "Resolved fhir path: $(command -v fhir || echo 'not found')"
         shell: bash
-
-      # Connectivity & secret sanity diagnostics BEFORE composite action
-      - name: Diagnostics - Simplifier connectivity & secrets
-        run: |
-          set -e
-          echo "== Secret Presence Check =="
-          if [ -n "$SIMPLIFIER_USERNAME" ]; then echo "SIMPLIFIER_USERNAME present (length ${#SIMPLIFIER_USERNAME})"; else echo "SIMPLIFIER_USERNAME MISSING"; fi
-          if [ -n "$SIMPLIFIER_PASSWORD" ]; then echo "SIMPLIFIER_PASSWORD present (length ${#SIMPLIFIER_PASSWORD})"; else echo "SIMPLIFIER_PASSWORD MISSING"; fi
-
-          echo "== Network Reachability =="
-          which curl || (echo 'curl missing' && exit 1)
-          echo "Pinging api.simplifier.net (HTTPS root) ..."
-          curl -I -s https://api.simplifier.net/ | head -n 1 || echo "No response from root endpoint"
-          echo "Heartbeat (if available) ..."
-          curl -s -o /dev/null -w 'HTTP % {http_code}\n' https://api.simplifier.net/ || true
-
-          echo "== Manual Firely Terminal login test with timeout =="
-          if ! command -v fhir >/dev/null 2>&1; then
-            echo "fhir CLI not on PATH unexpectedly"; exit 1;
-          fi
-          # Avoid dumping credentials; just attempt
-          if [ -n "$SIMPLIFIER_USERNAME" ] && [ -n "$SIMPLIFIER_PASSWORD" ]; then
-            if command -v timeout >/dev/null 2>&1; then
-              set +e
-              timeout 25s fhir login email=$SIMPLIFIER_USERNAME password=$SIMPLIFIER_PASSWORD >/tmp/fhir_login.out 2>&1
-              LOGIN_RC=$?
-              set -e
-              echo "Login exit code: $LOGIN_RC (124=timeout)"
-              tail -n 20 /tmp/fhir_login.out | sed 's/password=[^ ]*/password=***MASKED***/g'
-            else
-              echo "timeout command not available; running without it (may hang)";
-              fhir login email=$SIMPLIFIER_USERNAME password=$SIMPLIFIER_PASSWORD >/dev/null 2>&1 || echo "Manual login non-zero exit (ignored)"
-            fi
-          else
-            echo "Skipping manual login test due to missing credentials"
-          fi
-        shell: bash
-        env:
-          SIMPLIFIER_USERNAME: ${{ secrets.SIMPLIFIER_USERNAME }}
-          SIMPLIFIER_PASSWORD: ${{ secrets.SIMPLIFIER_PASSWORD }}
-
-      # Shim fhir CLI to skip 'fhir login' (local only) while allowing all other subcommands
-      - name: Shim Firely Terminal login (local only)
-        run: |
-          set -e
-          REAL_FHIR="$HOME/.dotnet/tools/fhir"
-          if [ ! -x "$REAL_FHIR" ]; then
-            echo "Real fhir binary not found at $REAL_FHIR" >&2; exit 1
-          fi
-          mkdir -p shim-bin
-          printf '%s\n' '#!/usr/bin/env bash' \
-            'REAL_FHIR="$HOME/.dotnet/tools/fhir"' \
-            'if [ "$1" = "login" ]; then' \
-            '  echo "[shim] Skipping fhir login during local act run"' \
-            '  exit 0' \
-            'fi' \
-            'exec "$REAL_FHIR" "$@"' > shim-bin/fhir
-          chmod +x shim-bin/fhir
-          echo "shim-bin" >> "$GITHUB_PATH"
-          echo "Shim in place. fhir resolves to: $(command -v fhir)"
-          fhir -v || true
-        shell: bash
+   
        
       # Run local version of the composite action under development
       - name: Firely.Terminal (Local)
@@ -152,11 +112,3 @@ jobs:
           FIRELY_TERMINAL_VERSION: 3.4.0
           ##JAVA_VALIDATOR_VERSION: 6.7.1
           FIRELY_TERMINAL_VALIDATOR_ENGINE: Advanced
-
-      # Optional: show detected FHIR version after run
-      - name: Show detected FHIR version
-        if: always()
-        run: |
-          echo "Detected FHIR_VERSION: $FHIR_VERSION"
-          ls -R fsh-generated || true
-        shell: bash

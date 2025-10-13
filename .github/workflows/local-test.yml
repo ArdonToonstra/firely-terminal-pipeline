@@ -14,28 +14,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Prepare test content: copy everything from test/ root into workspace root (without overwriting existing unless forced)
-      - name: Copy test harness content
-        run: |
-          echo "Copying test harness files from ./test into workspace root..."
-          if [ ! -d test ]; then
-            echo "No test/ directory found after checkout. If running under act and you expected local uncommitted test data, ensure checkout step is skipped (env ACT is: ${ACT:-unset}).";
-            echo "Contents of workspace root:"; ls -1; exit 0;
-          fi
-          shopt -s dotglob nullglob
-          for f in test/*; do
-            if [ -e "$f" ]; then
-              if [ -d "$f" ]; then
-                echo "Syncing directory $f -> ${f#test/}";
-                rsync -a --delete "$f/" "${f#test/}/" 2>/dev/null || cp -R "$f" .
-              else
-                echo "Copying file $f";
-                cp -f "$f" .
-              fi
-            fi
-          done
-          echo "Workspace root now contains:"; ls -1
-        shell: bash
+
 
       # Install .NET runtime
       - name: Setup .NET Core SDK
@@ -92,10 +71,33 @@ jobs:
           echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
           echo "Resolved fhir path: $(command -v fhir || echo 'not found')"
         shell: bash
-   
+
+        
+      # Prepare test content: copy everything from test/R4/ into workspace root for R4 testing
+      - name: Copy R4 test harness content
+        run: |
+          echo "Copying R4 test harness files from ./test/R4 into workspace root..."
+          if [ ! -d test/R4 ]; then
+            echo "No test/R4/ directory found after checkout. If running under act and you expected local uncommitted test data, ensure checkout step is skipped (env ACT is: ${ACT:-unset}).";
+            echo "Contents of workspace root:"; ls -1; exit 0;
+          fi
+          shopt -s dotglob nullglob
+          for f in test/R4/*; do
+            if [ -e "$f" ]; then
+              if [ -d "$f" ]; then
+                echo "Syncing directory $f -> ${f#test/R4/}";
+                rsync -a --delete "$f/" "${f#test/R4/}/" 2>/dev/null || cp -R "$f" .
+              else
+                echo "Copying file $f -> ${f#test/R4/}";
+                cp -f "$f" "${f#test/R4/}"
+              fi
+            fi
+          done
+          echo "Workspace root now contains:"; ls -1
+        shell: bash        
        
       # Run local version of the composite action under development
-      - name: Firely.Terminal (Local)
+      - name: Firely.Terminal (Local) R4 Validation
         uses: ./
         with:
           PATH_TO_CONFORMANCE_RESOURCES: fsh-generated/resources
@@ -105,10 +107,62 @@ jobs:
           DOTNET_VALIDATION_ENABLED: true
           JAVA_VALIDATION_ENABLED: true
           JAVA_VALIDATION_OPTIONS: -show-message-ids -advisor-file input/validation-advisor-file.txt
-          EXPECTED_FAILS: VALIDATION_CONFORMANCE_DOTNET VALIDATION_CONFORMANCE_JAVA
+          EXPECTED_FAILS: VALIDATION_CONFORMANCE_DOTNET VALIDATION_CONFORMANCE_JAVA VALIDATION_CONFORMANCE_JAVA
           SIMPLIFIER_USERNAME: ${{ secrets.SIMPLIFIER_USERNAME }}
           SIMPLIFIER_PASSWORD: ${{ secrets.SIMPLIFIER_PASSWORD }}
           SUSHI_ENABLED: true
           FIRELY_TERMINAL_VERSION: 3.4.0
           ##JAVA_VALIDATOR_VERSION: 6.7.1
-          FIRELY_TERMINAL_VALIDATOR_ENGINE: Advanced
+          FIRELY_TERMINAL_VALIDATOR_ENGINE: regular
+
+      # Remove all R4 test content to prepare for STU3 testing
+      - name: Clean up R4 test content
+        run: |
+          echo "Cleaning up all R4 test content..."
+          # Remove all files and directories that were copied from test/R4/
+          rm -rf fsh-generated input package.json sushi-config.yaml
+          # Remove any other R4-specific artifacts
+          rm -rf .fhir validation-results.json
+          echo "Workspace root now contains:"; ls -1
+        shell: bash
+
+      # Prepare test content: copy everything from test/STU3/ into workspace root for STU3 testing
+      - name: Copy STU3 test harness content
+        run: |
+          echo "Copying STU3 test harness files from ./test/STU3 into workspace root..."
+          if [ ! -d test/STU3 ]; then
+            echo "No test/STU3/ directory found after checkout. If running under act and you expected local uncommitted test data, ensure checkout step is skipped (env ACT is: ${ACT:-unset}).";
+            echo "Contents of workspace root:"; ls -1; exit 0;
+          fi
+          shopt -s dotglob nullglob
+          for f in test/STU3/*; do
+            if [ -e "$f" ]; then
+              if [ -d "$f" ]; then
+                echo "Syncing directory $f -> ${f#test/STU3/}";
+                rsync -a --delete "$f/" "${f#test/STU3/}/" 2>/dev/null || cp -R "$f" .
+              else
+                echo "Copying file $f -> ${f#test/STU3/}";
+                cp -f "$f" "${f#test/STU3/}"
+              fi
+            fi
+          done
+          echo "Workspace root now contains:"; ls -1
+        shell: bash
+
+
+      # Run local version of the composite action under development
+      - name: Firely.Terminal (Local) STU3 Validation
+        uses: ./
+        with:
+          PATH_TO_CONFORMANCE_RESOURCES: input/resources
+          PATH_TO_EXAMPLES: input/resources
+          #PATH_TO_QUALITY_CONTROL_RULES: unittest
+          DOTNET_VALIDATION_ENABLED: false
+          JAVA_VALIDATION_ENABLED: true
+          EXPECTED_FAILS: VALIDATION_CONFORMANCE_JAVA VALIDATION_EXAMPLES_JAVA
+          SIMPLIFIER_USERNAME: ${{ secrets.SIMPLIFIER_USERNAME }}
+          SIMPLIFIER_PASSWORD: ${{ secrets.SIMPLIFIER_PASSWORD }}
+          SUSHI_ENABLED: false
+          FIRELY_TERMINAL_VERSION: 3.4.0
+          ##JAVA_VALIDATOR_VERSION: 6.6.7
+          FIRELY_TERMINAL_VALIDATOR_ENGINE: regular
